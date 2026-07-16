@@ -115,14 +115,14 @@ class SenHydroDockWidget(QDockWidget):
         extent_box = QGroupBox("Emprise")
         extent_layout = QVBoxLayout(extent_box)
         self.chk_clip_senegal = QCheckBox(
-            "Limiter aux limites communales du Senegal (couche 'Limites_communes')"
+            "Limiter au territoire du Senegal (limites communales)"
         )
         self.chk_clip_senegal.setChecked(True)
         extent_layout.addWidget(self.chk_clip_senegal)
         extent_note = QLabel(
             "Le bassin versant et le reseau hydrographique seront decoupes "
-            "selon l'union des limites communales, pour ne conserver que la "
-            "partie situee sur le territoire senegalais."
+            "selon la frontiere du Senegal (limites communales officielles, "
+            "integrees au plugin). Aucune couche a charger manuellement."
         )
         extent_note.setWordWrap(True)
         extent_note.setStyleSheet("color: gray; font-size: 10px;")

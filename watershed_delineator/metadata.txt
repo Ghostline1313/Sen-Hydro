@@ -1,11 +1,11 @@
 [general]
 name=Sen Hydro - Watershed Delineation
 qgisMinimumVersion=3.16
-description=Sen Hydro delineates the upstream watershed of any point clicked on the map, using the open-source "delineator" package (MERIT-Hydro/HydroSHEDS data). Useful for hydrology, water resource management, flood risk assessment and land-use planning. Results can be clipped to Senegal's commune boundaries.
+description=Sen Hydro delineates the upstream watershed of any point clicked on the map, using the open-source "delineator" package (MERIT-Hydro/HydroSHEDS data). Useful for hydrology, water resource management, flood risk assessment and land-use planning. Includes a built-in Senegal national boundary layer to automatically clip results to the country's territory.
 about=Click anywhere on the map to instantly delineate the upstream watershed boundary of that point, together with the associated river network and outlet point. Built on the Python package "delineator" (MIT License, Matthew Heberger), which processes global MERIT-Hydro/HydroSHEDS data. Includes configurable calculation options (precision, simplification, smoothing), custom styling, an on-screen watershed report (area, perimeter, river length), and optional clipping of results to Senegal's official commune boundaries. Ideal for hydrological studies, irrigation planning, flood risk analysis, integrated water resources management (IWRM), and teaching hydrology in West Africa and beyond.
 
  Sen Hydro delimite le bassin versant en amont de tout point clique sur la carte, a partir du package open-source "delineator" (donnees MERIT-Hydro/HydroSHEDS). Comprend des options de calcul, un style personnalisable, un rapport du bassin versant, et un decoupage optionnel selon les limites communales du Senegal.
-version=1.2
+version=1.3
 author=Adiouma FALL - Geo Senegal
 email=mouridefalltouba@gmail.com
 homepage=https://github.com/Ghostline1313/Sen-Hydro

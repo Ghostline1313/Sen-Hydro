@@ -339,13 +339,34 @@ class WatershedDelineatorPlugin:
 
     def _get_senegal_boundary(self):
         """
-        Retourne (et met en cache) la geometrie dissoute des limites
-        communales du Senegal, reprojetee en EPSG:4326 (meme CRS que les
-        couches produites par 'delineator').
+        Retourne (et met en cache) la geometrie de la frontiere du Senegal,
+        en EPSG:4326 (meme CRS que les couches produites par 'delineator').
+
+        Deux sources sont essayees, dans cet ordre :
+        1. Le fichier embarque dans le plugin (data/senegal_boundary.gpkg),
+           genere une fois pour toutes a partir des limites communales
+           officielles. Fonctionne sans configuration, dans n'importe quel
+           projet QGIS.
+        2. A defaut (fichier absent/corrompu), une couche nommee
+           'Limites_communes' presente dans le projet ouvert, dissoute a la
+           volee (comportement historique, conserve en secours).
         """
         if self._senegal_boundary_4326 is not None:
             return self._senegal_boundary_4326
 
+        # --- Source 1 : fichier embarque dans le plugin ---
+        bundled_path = os.path.join(
+            os.path.dirname(__file__), "data", "senegal_boundary.gpkg"
+        )
+        if os.path.isfile(bundled_path):
+            bundled_layer = QgsVectorLayer(bundled_path, "senegal_boundary", "ogr")
+            if bundled_layer.isValid() and bundled_layer.featureCount() > 0:
+                feat = next(bundled_layer.getFeatures(), None)
+                if feat is not None and feat.geometry() is not None and not feat.geometry().isEmpty():
+                    self._senegal_boundary_4326 = QgsGeometry(feat.geometry())
+                    return self._senegal_boundary_4326
+
+        # --- Source 2 (secours) : couche 'Limites_communes' du projet ---
         communes_layer = None
         for layer in QgsProject.instance().mapLayers().values():
             if layer.name() == self.COMMUNES_LAYER_NAME:
