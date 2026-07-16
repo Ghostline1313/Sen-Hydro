@@ -96,8 +96,11 @@ def main():
                 if "area_km2" not in stats:
                     stats["area_km2"] = float(gdf_m.geometry.area.sum() / 1e6)
                 stats["perimeter_km"] = float(gdf_m.geometry.length.sum() / 1000.0)
-            except Exception:
-                pass
+            except Exception as reproj_err:
+                # Non-fatal: area from the "area" column above may already be
+                # set. Record the reprojection failure for diagnostics instead
+                # of silently discarding it.
+                stats["perimeter_stats_error"] = str(reproj_err)
     except Exception as e:
         stats["watershed_stats_error"] = str(e)
 

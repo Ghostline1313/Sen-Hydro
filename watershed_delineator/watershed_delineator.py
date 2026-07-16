@@ -50,6 +50,8 @@ from qgis.core import (
     QgsGeometry,
     QgsDistanceArea,
     QgsUnitTypes,
+    QgsMessageLog,
+    Qgis,
 )
 from qgis.gui import QgsMapToolEmitPoint
 
@@ -167,11 +169,19 @@ class WatershedDelineatorPlugin:
             json.dump(config, f)
 
         try:
-            result = subprocess.run(
+            # nosec B603 - Liste d'arguments fixe (pas de shell=True, pas de
+            # concatenation de chaine). python_exe et worker_script sont des
+            # chemins controles par le plugin (interpreteur QGIS/venv dedie
+            # et le script delineate_worker.py livre avec le plugin), pas des
+            # entrees fournies par un utilisateur distant ou non fiable.
+            # lat/lon sont de simples coordonnees numeriques issues du clic
+            # sur la carte.
+            result = subprocess.run(  # nosec B603
                 [python_exe, worker_script, str(lat), str(lon), tmp_dir, config_path],
                 capture_output=True,
                 text=True,
                 timeout=900,  # premier calcul dans une zone = telechargement possible
+                shell=False,
             )
         except subprocess.TimeoutExpired:
             QMessageBox.warning(
@@ -314,10 +324,16 @@ class WatershedDelineatorPlugin:
                 symbol.setColor(color)
                 symbol.setSize(3)
                 layer.setRenderer(QgsSingleSymbolRenderer(symbol))
-        except Exception:
+        except Exception as style_err:
             # Le style est une amelioration cosmetique : en cas d'echec,
             # la couche reste affichee avec le style par defaut de QGIS.
-            pass
+            # On journalise plutot que d'ignorer silencieusement l'erreur.
+            QgsMessageLog.logMessage(
+                "Sen Hydro: echec de l'application du style pour '%s': %s"
+                % (key, style_err),
+                "Sen Hydro",
+                Qgis.Warning,
+            )
 
         layer.triggerRepaint()
 
