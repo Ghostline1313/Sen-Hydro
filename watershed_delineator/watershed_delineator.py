@@ -52,6 +52,8 @@ from qgis.core import (
     QgsUnitTypes,
     QgsMessageLog,
     Qgis,
+    QgsCategorizedSymbolRenderer,
+    QgsRendererCategory,
 )
 from qgis.gui import QgsMapToolEmitPoint
 
@@ -248,6 +250,7 @@ class WatershedDelineatorPlugin:
 
         style = self.dock.get_style() if self.dock is not None else None
         show_watershed = self.dock.chk_show_watershed.isChecked() if self.dock is not None else True
+        outlet_both = self.dock.chk_outlet_both.isChecked() if self.dock is not None else True
         clip_senegal = self.dock.chk_clip_senegal.isChecked() if self.dock is not None else False
 
         loaded_layers = {}
@@ -256,6 +259,8 @@ class WatershedDelineatorPlugin:
                 continue
             layer = self._add_layer(path, LAYER_LABELS.get(key, key))
             if layer is not None:
+                if key == "outlet" and not outlet_both:
+                    self._keep_only_snapped_outlet(layer)
                 loaded_layers[key] = layer
                 if style is not None:
                     self._apply_style(layer, key, style)
@@ -285,6 +290,24 @@ class WatershedDelineatorPlugin:
             QMessageBox.information(self.iface.mainWindow(), "Decoupage Senegal", clip_warning)
 
         self.canvas.refresh()
+
+    def _keep_only_snapped_outlet(self, layer):
+        """
+        Ne conserve que le point exutoire 'snapped' (ajuste a la riviere),
+        qui est celui reellement utilise pour le calcul du bassin versant.
+        """
+        type_idx = layer.fields().indexOf("type")
+        if type_idx < 0:
+            return
+        layer.startEditing()
+        to_delete = [
+            f.id() for f in layer.getFeatures()
+            if str(f.attribute("type")).lower() != "snapped"
+        ]
+        for fid in to_delete:
+            layer.deleteFeature(fid)
+        layer.commitChanges()
+        layer.updateExtents()
 
     def _add_layer(self, path, layer_name):
         layer = QgsVectorLayer(path, layer_name, "ogr")
@@ -320,10 +343,37 @@ class WatershedDelineatorPlugin:
                 layer.setRenderer(QgsSingleSymbolRenderer(symbol))
             elif key == "outlet":
                 color = QColor(style["watershed_color"])
-                symbol = QgsMarkerSymbol.createSimple({})
-                symbol.setColor(color)
-                symbol.setSize(3)
-                layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+                type_idx = layer.fields().indexOf("type")
+                if type_idx >= 0:
+                    # Point "demande" (clic) : marqueur creux (contour seul)
+                    requested_symbol = QgsMarkerSymbol.createSimple({})
+                    requested_symbol.setColor(QColor(255, 255, 255, 0))
+                    if requested_symbol.symbolLayerCount() > 0:
+                        requested_symbol.symbolLayer(0).setStrokeColor(color)
+                        requested_symbol.symbolLayer(0).setStrokeWidth(0.8)
+                    requested_symbol.setSize(3)
+
+                    # Point "ajuste a la riviere" : marqueur plein
+                    snapped_symbol = QgsMarkerSymbol.createSimple({})
+                    snapped_symbol.setColor(color)
+                    snapped_symbol.setSize(3)
+
+                    categories = [
+                        QgsRendererCategory(
+                            "requested", requested_symbol, "Point demande (clic)"
+                        ),
+                        QgsRendererCategory(
+                            "snapped", snapped_symbol, "Point ajuste a la riviere"
+                        ),
+                    ]
+                    layer.setRenderer(
+                        QgsCategorizedSymbolRenderer("type", categories)
+                    )
+                else:
+                    symbol = QgsMarkerSymbol.createSimple({})
+                    symbol.setColor(color)
+                    symbol.setSize(3)
+                    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
         except Exception as style_err:
             # Le style est une amelioration cosmetique : en cas d'echec,
             # la couche reste affichee avec le style par defaut de QGIS.

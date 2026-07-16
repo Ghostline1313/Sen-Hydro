@@ -109,6 +109,21 @@ class SenHydroDockWidget(QDockWidget):
         disp_layout.addWidget(self.chk_show_rivers)
         disp_layout.addWidget(self.chk_show_watershed)
         disp_layout.addWidget(self.chk_show_outlet)
+
+        self.chk_outlet_both = QCheckBox(
+            "  Afficher les 2 points (clique + ajuste a la riviere)"
+        )
+        self.chk_outlet_both.setChecked(True)
+        outlet_note = QLabel(
+            "  Le point exutoire est parfois legerement deplace ('ajuste') "
+            "vers le cours d'eau le plus proche pour un calcul plus precis. "
+            "Decochez pour ne garder que le point ajuste (utilise pour le calcul)."
+        )
+        outlet_note.setWordWrap(True)
+        outlet_note.setStyleSheet("color: gray; font-size: 10px;")
+        disp_layout.addWidget(self.chk_outlet_both)
+        disp_layout.addWidget(outlet_note)
+
         layout.addWidget(disp_box)
 
         # --- Emprise ---
