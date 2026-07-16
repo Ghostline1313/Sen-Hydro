@@ -128,14 +128,24 @@ class WatershedDelineatorPlugin:
                 try:
                     self._worker_proc.stdin.write("SHUTDOWN\n")
                     self._worker_proc.stdin.flush()
-                except Exception:
-                    pass
+                except Exception as write_err:
+                    QgsMessageLog.logMessage(
+                        "Sen Hydro: echec de l'envoi de SHUTDOWN au worker: %s" % write_err,
+                        "Sen Hydro", Qgis.Info,
+                    )
                 self._worker_proc.wait(timeout=5)
-        except Exception:
+        except Exception as stop_err:
+            QgsMessageLog.logMessage(
+                "Sen Hydro: arret propre du worker impossible (%s), terminaison forcee." % stop_err,
+                "Sen Hydro", Qgis.Info,
+            )
             try:
                 self._worker_proc.terminate()
-            except Exception:
-                pass
+            except Exception as term_err:
+                QgsMessageLog.logMessage(
+                    "Sen Hydro: echec de la terminaison forcee du worker: %s" % term_err,
+                    "Sen Hydro", Qgis.Warning,
+                )
         self._worker_proc = None
 
     def _ensure_worker_server(self):
@@ -154,13 +164,19 @@ class WatershedDelineatorPlugin:
         worker_script = os.path.join(os.path.dirname(__file__), "delineate_worker.py")
 
         try:
-            self._worker_proc = subprocess.Popen(
+            # nosec B603 - Liste d'arguments fixe (pas de shell=True, pas de
+            # concatenation de chaine). python_exe et worker_script sont des
+            # chemins controles par le plugin (interpreteur QGIS/venv dedie
+            # et le script delineate_worker.py livre avec le plugin), pas des
+            # entrees fournies par un utilisateur distant ou non fiable.
+            self._worker_proc = subprocess.Popen(  # nosec B603
                 [python_exe, worker_script, "--server"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                shell=False,
             )
         except Exception as e:
             self._worker_proc = None
@@ -180,8 +196,12 @@ class WatershedDelineatorPlugin:
             stderr_out = ""
             try:
                 stderr_out = self._worker_proc.stderr.read()
-            except Exception:
-                pass
+            except Exception as read_err:
+                QgsMessageLog.logMessage(
+                    "Sen Hydro: impossible de lire stderr du worker apres "
+                    "son arret inattendu: %s" % read_err,
+                    "Sen Hydro", Qgis.Warning,
+                )
             self._worker_proc = None
             if "IMPORT_ERROR" in stderr_out or "No module named" in stderr_out or "ModuleNotFoundError" in stderr_out:
                 QMessageBox.critical(
@@ -295,8 +315,12 @@ class WatershedDelineatorPlugin:
             stderr_out = ""
             try:
                 stderr_out = self._worker_proc.stderr.read()
-            except Exception:
-                pass
+            except Exception as read_err:
+                QgsMessageLog.logMessage(
+                    "Sen Hydro: impossible de lire stderr du worker apres "
+                    "son arret inattendu: %s" % read_err,
+                    "Sen Hydro", Qgis.Warning,
+                )
             self._worker_proc = None
             if "IMPORT_ERROR" in stderr_out or "No module named" in stderr_out or "ModuleNotFoundError" in stderr_out:
                 QMessageBox.critical(
