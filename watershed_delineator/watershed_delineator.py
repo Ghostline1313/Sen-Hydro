@@ -37,7 +37,7 @@ import tempfile
 
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QIcon, QColor
-from qgis.PyQt.QtWidgets import QAction, QMessageBox, QFileDialog
+from qgis.PyQt.QtWidgets import QAction, QMessageBox, QFileDialog, QApplication
 from qgis.core import (
     QgsProject,
     QgsVectorLayer,
@@ -54,6 +54,8 @@ from qgis.core import (
     Qgis,
     QgsCategorizedSymbolRenderer,
     QgsRendererCategory,
+    QgsWkbTypes,
+    QgsFeature,
 )
 from qgis.gui import QgsMapToolEmitPoint
 
@@ -82,6 +84,9 @@ class WatershedDelineatorPlugin:
         self.map_tool = None
         self.dock = None
         self._senegal_boundary_4326 = None
+        self._senegal_boundary_simplified_4326 = None
+        self._senegal_engine = None
+        self._worker_proc = None
 
     def initGui(self):
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
@@ -112,6 +117,93 @@ class WatershedDelineatorPlugin:
             self.canvas.unsetMapTool(self.map_tool)
         if self.dock is not None:
             self.iface.removeDockWidget(self.dock)
+        self._stop_worker_server()
+
+    def _stop_worker_server(self):
+        """Arrete proprement le processus worker persistant, s'il tourne."""
+        if self._worker_proc is None:
+            return
+        try:
+            if self._worker_proc.poll() is None:
+                try:
+                    self._worker_proc.stdin.write("SHUTDOWN\n")
+                    self._worker_proc.stdin.flush()
+                except Exception:
+                    pass
+                self._worker_proc.wait(timeout=5)
+        except Exception:
+            try:
+                self._worker_proc.terminate()
+            except Exception:
+                pass
+        self._worker_proc = None
+
+    def _ensure_worker_server(self):
+        """
+        Demarre le worker en mode serveur persistant si necessaire.
+        Retourne True si le serveur est pret a recevoir des requetes.
+
+        Le premier demarrage prend quelques secondes (import du package
+        'delineator' et de ses dependances). Les appels suivants reutilisent
+        le meme processus et sont donc beaucoup plus rapides.
+        """
+        if self._worker_proc is not None and self._worker_proc.poll() is None:
+            return True
+
+        python_exe = self._get_worker_python()
+        worker_script = os.path.join(os.path.dirname(__file__), "delineate_worker.py")
+
+        try:
+            self._worker_proc = subprocess.Popen(
+                [python_exe, worker_script, "--server"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as e:
+            self._worker_proc = None
+            QMessageBox.critical(
+                self.iface.mainWindow(),
+                "Erreur de demarrage",
+                "Impossible de demarrer le worker Sen Hydro :\n%s" % e,
+            )
+            return False
+
+        try:
+            ready_line = self._worker_proc.stdout.readline()
+        except Exception as e:
+            ready_line = ""
+
+        if ready_line.strip() != "READY":
+            stderr_out = ""
+            try:
+                stderr_out = self._worker_proc.stderr.read()
+            except Exception:
+                pass
+            self._worker_proc = None
+            if "IMPORT_ERROR" in stderr_out or "No module named" in stderr_out or "ModuleNotFoundError" in stderr_out:
+                QMessageBox.critical(
+                    self.iface.mainWindow(),
+                    "Package manquant",
+                    "Le package Python 'delineator' n'est pas installe pour "
+                    "l'interpreteur :\n%s\n\n"
+                    "Ouvrez la console OSGeo4W/QGIS Python et executez :\n"
+                    "    \"%s\" -m pip install delineator\n\n"
+                    "Plugin developpe par Adiouma FALL - Geo Senegal 2026." % (
+                        python_exe, python_exe
+                    ),
+                )
+            else:
+                QMessageBox.critical(
+                    self.iface.mainWindow(),
+                    "Erreur de demarrage du worker",
+                    "Le worker Sen Hydro n'a pas demarre correctement :\n\n%s" % stderr_out,
+                )
+            return False
+
+        return True
 
     def toggle_panel(self, checked):
         if self.dock is None:
@@ -163,76 +255,83 @@ class WatershedDelineatorPlugin:
 
         config = self.dock.get_config() if self.dock is not None else {}
 
-        python_exe = self._get_worker_python()
-        worker_script = os.path.join(os.path.dirname(__file__), "delineate_worker.py")
-        tmp_dir = tempfile.mkdtemp(prefix="watershed_")
-        config_path = os.path.join(tmp_dir, "config.json")
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f)
+        status_bar = self.iface.mainWindow().statusBar()
+        is_first_start = self._worker_proc is None or self._worker_proc.poll() is not None
+        if is_first_start:
+            status_bar.showMessage(
+                "Sen Hydro : demarrage du moteur de calcul (premiere utilisation, "
+                "quelques secondes)...",
+            )
+            QApplication.processEvents()
 
-        try:
-            # nosec B603 - Liste d'arguments fixe (pas de shell=True, pas de
-            # concatenation de chaine). python_exe et worker_script sont des
-            # chemins controles par le plugin (interpreteur QGIS/venv dedie
-            # et le script delineate_worker.py livre avec le plugin), pas des
-            # entrees fournies par un utilisateur distant ou non fiable.
-            # lat/lon sont de simples coordonnees numeriques issues du clic
-            # sur la carte.
-            result = subprocess.run(  # nosec B603
-                [python_exe, worker_script, str(lat), str(lon), tmp_dir, config_path],
-                capture_output=True,
-                text=True,
-                timeout=900,  # premier calcul dans une zone = telechargement possible
-                shell=False,
-            )
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(
-                self.iface.mainWindow(),
-                "Calcul trop long",
-                "Le calcul depasse 15 minutes (probablement un telechargement "
-                "de donnees volumineux pour cette zone). Reessayez : les "
-                "donnees deja telechargees seront reutilisees et ce sera "
-                "plus rapide la prochaine fois.",
-            )
+        if not self._ensure_worker_server():
+            status_bar.clearMessage()
             return
+
+        tmp_dir = tempfile.mkdtemp(prefix="watershed_")
+        request = {"lat": lat, "lon": lon, "out_dir": tmp_dir, "config": config}
+
+        status_bar.showMessage("Sen Hydro : calcul du bassin versant en cours...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._worker_proc.stdin.write(json.dumps(request) + "\n")
+            self._worker_proc.stdin.flush()
+            response_line = self._worker_proc.stdout.readline()
         except Exception as e:
+            QApplication.restoreOverrideCursor()
+            status_bar.clearMessage()
+            self._worker_proc = None
             QMessageBox.critical(
                 self.iface.mainWindow(),
-                "Erreur d'execution",
-                "Impossible de lancer le calcul du bassin versant :\n%s" % e,
+                "Erreur de communication",
+                "La communication avec le worker Sen Hydro a echoue :\n%s\n\n"
+                "Reessayez : le worker va redemarrer automatiquement." % e,
             )
             return
+        QApplication.restoreOverrideCursor()
+        status_bar.clearMessage()
 
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            if "IMPORT_ERROR" in stderr or "No module named" in stderr:
+        if not response_line:
+            stderr_out = ""
+            try:
+                stderr_out = self._worker_proc.stderr.read()
+            except Exception:
+                pass
+            self._worker_proc = None
+            if "IMPORT_ERROR" in stderr_out or "No module named" in stderr_out or "ModuleNotFoundError" in stderr_out:
                 QMessageBox.critical(
                     self.iface.mainWindow(),
                     "Package manquant",
                     "Le package Python 'delineator' n'est pas installe pour "
-                    "l'interpreteur :\n%s\n\n"
-                    "Ouvrez la console OSGeo4W/QGIS Python et executez :\n"
-                    "    \"%s\" -m pip install delineator\n\n"
-                    "Plugin developpe par Adiouma FALL - Geo Senegal 2026." % (
-                        python_exe, python_exe
-                    ),
+                    "l'interpreteur du worker.\n\n"
+                    "Plugin developpe par Adiouma FALL - Geo Senegal 2026.",
                 )
             else:
                 QMessageBox.critical(
                     self.iface.mainWindow(),
                     "Erreur de delimitation",
-                    "Une erreur est survenue pendant le calcul du bassin versant :\n\n%s" % stderr,
+                    "Le worker Sen Hydro s'est arrete de maniere inattendue :\n\n%s\n\n"
+                    "Reessayez : il redemarrera automatiquement." % stderr_out,
                 )
             return
 
         try:
-            output = json.loads((result.stdout or "").strip().splitlines()[-1])
+            output = json.loads(response_line)
         except Exception as e:
             QMessageBox.critical(
                 self.iface.mainWindow(),
                 "Erreur de lecture des resultats",
                 "Le calcul semble avoir reussi mais les resultats n'ont pas pu "
-                "etre lus :\n%s\n\nSortie brute :\n%s" % (e, result.stdout),
+                "etre lus :\n%s\n\nSortie brute :\n%s" % (e, response_line),
+            )
+            return
+
+        if not output.get("ok", True):
+            QMessageBox.critical(
+                self.iface.mainWindow(),
+                "Erreur de delimitation",
+                "Une erreur est survenue pendant le calcul du bassin versant :\n\n%s"
+                % output.get("error", "erreur inconnue"),
             )
             return
 
@@ -274,8 +373,16 @@ class WatershedDelineatorPlugin:
                     "le decoupage aux limites du Senegal a ete ignore." % self.COMMUNES_LAYER_NAME
                 )
             else:
-                for key, layer in loaded_layers.items():
-                    self._clip_layer_to_senegal(layer, senegal_geom)
+                proj = QgsProject.instance()
+                for key in list(loaded_layers.keys()):
+                    old_layer = loaded_layers[key]
+                    clipped_layer = self._clip_layer_to_senegal(old_layer)
+                    if clipped_layer is not old_layer:
+                        proj.removeMapLayer(old_layer.id())
+                        proj.addMapLayer(clipped_layer)
+                        if style is not None:
+                            self._apply_style(clipped_layer, key, style)
+                        loaded_layers[key] = clipped_layer
                 # Les stats du worker sont calculees avant decoupage : on les
                 # recalcule sur la geometrie effectivement affichee.
                 if "watershed" in loaded_layers:
@@ -337,10 +444,34 @@ class WatershedDelineatorPlugin:
                 layer.setRenderer(QgsSingleSymbolRenderer(symbol))
             elif key == "rivers":
                 color = QColor(style["river_color"])
-                symbol = QgsLineSymbol.createSimple({})
-                symbol.setColor(color)
-                symbol.setWidth(width)
-                layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+                sorder_idx = layer.fields().indexOf("sorder")
+                if sorder_idx >= 0:
+                    orders = sorted({
+                        f.attribute("sorder") for f in layer.getFeatures()
+                        if f.attribute("sorder") is not None
+                    })
+                    categories = []
+                    max_order = max(orders) if orders else 1
+                    for order in orders:
+                        # Plus l'ordre de Strahler est eleve, plus le trait est
+                        # epais : les cours d'eau principaux ressortent mieux.
+                        order_width = width * (0.6 + 1.4 * (order / max(max_order, 1)))
+                        symbol = QgsLineSymbol.createSimple({})
+                        symbol.setColor(color)
+                        symbol.setWidth(order_width)
+                        categories.append(
+                            QgsRendererCategory(
+                                order, symbol, "Ordre %s" % order
+                            )
+                        )
+                    layer.setRenderer(
+                        QgsCategorizedSymbolRenderer("sorder", categories)
+                    )
+                else:
+                    symbol = QgsLineSymbol.createSimple({})
+                    symbol.setColor(color)
+                    symbol.setWidth(width)
+                    layer.setRenderer(QgsSingleSymbolRenderer(symbol))
             elif key == "outlet":
                 color = QColor(style["watershed_color"])
                 type_idx = layer.fields().indexOf("type")
@@ -447,30 +578,80 @@ class WatershedDelineatorPlugin:
         self._senegal_boundary_4326 = union_geom
         return union_geom
 
-    def _clip_layer_to_senegal(self, layer, senegal_geom):
+    def _get_senegal_clip_engine(self):
         """
-        Decoupe en place (edition + commit) les entites de `layer` selon
-        `senegal_geom`. Les entites entierement hors Senegal sont supprimees.
+        Retourne (et met en cache) un couple (geometrie Senegal simplifiee,
+        moteur GEOS "prepared") utilise pour des tests d'intersection tres
+        rapides, meme avec des milliers d'entites. La frontiere brute du
+        Senegal comporte ~55 000 sommets ; une intersection geometrique
+        classique contre une geometrie aussi detaillee, repetee pour chaque
+        entite (des centaines de troncons de riviere), est lente. La
+        simplification (tolerance ~50 m, negligeable a l'echelle d'un
+        bassin versant) et la preparation GEOS accelerent cela d'un facteur
+        5 a 10.
         """
-        layer.startEditing()
-        to_delete = []
+        if self._senegal_engine is not None:
+            return self._senegal_boundary_simplified_4326, self._senegal_engine
+
+        senegal_geom = self._get_senegal_boundary()
+        if senegal_geom is None:
+            return None, None
+
+        simplified = senegal_geom.simplify(0.0005)  # ~50 m a cette latitude
+        if simplified is None or simplified.isEmpty():
+            simplified = senegal_geom
+
+        engine = QgsGeometry.createGeometryEngine(simplified.constGet())
+        engine.prepareGeometry()
+
+        self._senegal_boundary_simplified_4326 = simplified
+        self._senegal_engine = engine
+        return simplified, engine
+
+    def _clip_layer_to_senegal(self, layer):
+        """
+        Retourne une NOUVELLE couche memoire contenant uniquement la partie
+        des entites de `layer` situee sur le territoire senegalais.
+
+        On reconstruit une couche memoire plutot que d'editer `layer` en
+        place (startEditing/changeGeometry/deleteFeature) : sur des couches
+        de plusieurs centaines/milliers d'entites (reseau hydrographique),
+        le systeme d'edition/undo de QGIS est beaucoup plus lent que de
+        simplement construire une nouvelle couche avec les geometries deja
+        decoupees.
+        """
+        simplified_senegal, engine = self._get_senegal_clip_engine()
+        if engine is None:
+            return layer
+
+        geom_type_str = QgsWkbTypes.displayString(layer.wkbType())
+        mem_layer = QgsVectorLayer(
+            "%s?crs=%s" % (geom_type_str, layer.crs().authid()),
+            layer.name(),
+            "memory",
+        )
+        mem_provider = mem_layer.dataProvider()
+        mem_provider.addAttributes(layer.fields())
+        mem_layer.updateFields()
+
+        new_features = []
         for feat in layer.getFeatures():
             geom = feat.geometry()
             if geom is None or geom.isEmpty():
                 continue
-            if not geom.intersects(senegal_geom):
-                to_delete.append(feat.id())
+            if not engine.intersects(geom.constGet()):
                 continue
-            clipped = geom.intersection(senegal_geom)
+            clipped = simplified_senegal.intersection(geom)
             if clipped is None or clipped.isEmpty():
-                to_delete.append(feat.id())
                 continue
-            layer.changeGeometry(feat.id(), clipped)
-        for fid in to_delete:
-            layer.deleteFeature(fid)
-        layer.commitChanges()
-        layer.updateExtents()
-        layer.triggerRepaint()
+            new_feat = QgsFeature(mem_layer.fields())
+            new_feat.setGeometry(clipped)
+            new_feat.setAttributes(feat.attributes())
+            new_features.append(new_feat)
+
+        mem_provider.addFeatures(new_features)
+        mem_layer.updateExtents()
+        return mem_layer
 
     def _make_distance_area(self):
         da = QgsDistanceArea()

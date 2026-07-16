@@ -244,6 +244,8 @@ class SenHydroDockWidget(QDockWidget):
             lines.append("Longueur du reseau hydrographique : %.2f km" % stats["river_length_km"])
         if "river_reach_count" in stats:
             lines.append("Nombre de troncons de riviere : %d" % stats["river_reach_count"])
+        if "max_stream_order" in stats:
+            lines.append("Ordre d'ecoulement maximal (Strahler) : %d" % stats["max_stream_order"])
         if len(lines) == 1:
             lines.append("Aucune statistique supplementaire disponible pour ce bassin.")
         text = "\n".join(lines)
